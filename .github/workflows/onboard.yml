@@ -2,11 +2,11 @@
 # from the central DSL teaching toolkit by 'Refresh actions' (nightly).
 name: Onboard student
 
-# Seed this into a cohort's public `welcome` repo as
+# Seed this into a semester's public `join` repo as
 # .github/workflows/onboard.yml. Students open a "Join course" issue here; the issue AUTHOR is
 # the authenticated GitHub handle (unspoofable). We match the typed ENROLMENT CODE (a
 # random, non-PII token the bot emailed to each student) against the PRIVATE
-# classroom-config/students.csv, reject non-enrolees, record the handle + immutable GitHub
+# semester-config/students.csv, reject non-enrolees, record the handle + immutable GitHub
 # id (building the email <-> GH-id mapping), then grant org membership + the role team the
 # matched row's `role` column names: `students` (enrolled) or `auditors` (read-only - same
 # released materials, no assignment repos). A roster with no `role` column is all-enrolled.
@@ -23,8 +23,8 @@ name: Onboard student
 # comment, which is never redacted. Once bound, a code is single-use (the "already linked"
 # guard), so a classmate can't bind your row to their account.
 #
-# Runs under secrets.DSL_BOT_TOKEN, which needs, on the cohort org: Contents R/W on
-# classroom-config, Members R/W (org invite + team), Issues R/W on welcome.
+# Runs under secrets.DSL_BOT_TOKEN, which needs, on the semester org: Contents R/W on
+# semester-config, Members R/W (org invite + team), Issues R/W on join.
 
 on:
   issues:
@@ -42,7 +42,7 @@ concurrency:
   cancel-in-progress: false
 
 # The ambient GITHUB_TOKEN comments on, labels and closes the issue in THIS repo. It gets
-# nothing else: the roster write lands in another repo (classroom-config), which only
+# nothing else: the roster write lands in another repo (semester-config), which only
 # DSL_BOT_TOKEN can reach, so `contents:` here would be scope with no purpose.
 permissions:
   issues: write
@@ -50,8 +50,12 @@ permissions:
 jobs:
   onboard:
     # Routed by the FORM's label, not the title: the title is a fixed default the student
-    # never edits (this workflow retitles the issue from the authenticated author).
-    if: contains(github.event.issue.labels.*.name, 'onboarding')
+    # never edits (this workflow retitles the issue from the authenticated author). An
+    # issue the student console opens through the API has no label (GitHub drops it for an
+    # author without push), so its hidden first line routes it instead.
+    if: >-
+      contains(github.event.issue.labels.*.name, 'onboarding') ||
+      startsWith(github.event.issue.body, '<!-- dsl:join-course -->')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,15 +64,15 @@ jobs:
         with:
           github-token: ${{ secrets.DSL_BOT_TOKEN || github.token }}
           script: |
-            const org    = context.repo.owner;            // the cohort org
+            const org    = context.repo.owner;            // the semester org
             const issue  = context.payload.issue;
             const handle = issue.user.login;              // authenticated identity
             const userId = issue.user.id;                 // immutable - key on this
-            const CONFIG = 'classroom-config', FILE = 'students.csv';
+            const CONFIG = 'semester-config', FILE = 'students.csv';
 
             // The half of the two onboarding workflows' github-script bodies that is the same in both.
             // Not a workflow of its own: dsl_course.welcome splices it in at their `// {shared_script}`
-            // line, so a cohort receives one file per workflow as before. It was written out twice, in
+            // line, so a semester receives one file per workflow as before. It was written out twice, in
             // two files, against one file format, with a test comparing the copies byte for byte to
             // catch the day they stopped agreeing.
             //
@@ -156,7 +160,7 @@ jobs:
                 creator: handle, labels: 'needs-review', per_page: 100,
               })).filter(i => !i.pull_request && i.number !== issue.number);
               if (unresolved.length >= 3) return fail(
-                `Thanks @${handle} - you have ${unresolved.length} unresolved Join course issues - contact the teaching team.`,
+                `Thanks @${handle} - you have ${unresolved.length} unresolved Join course issues - contact your instructors.`,
                 'needs-review');
 
               if (!process.env.HAS_BOT) {
@@ -188,7 +192,7 @@ jobs:
               const iCode = header.indexOf('enrol_code');
               // `role` is OPTIONAL - a roster seeded before the column existed has none, and a
               // missing/blank cell means `enrolled` (dsl_course.roster.normalise_role). Never
-              // required, so an older cohort's roster keeps onboarding.
+              // required, so an older semester's roster keeps onboarding.
               const iRole = header.indexOf('role');
               if (iHandle < 0 || iId < 0 || iCode < 0) return fail(
                 `Thanks @${handle} - the enrolment roster file's header is missing a required column ` +
@@ -201,19 +205,37 @@ jobs:
               const NO_MATCH =
                 `Thanks @${handle} - that enrolment code could not be matched to an unclaimed enrolment placement. ` +
                 `Check the code in your email; if you have already joined from another GitHub account, ` +
-                `or think this is a mistake, contact the teaching team.`;
+                `or think this is a mistake, contact your instructors.`;
               // Single-use: a code binds to the FIRST account that claims it. The one
               // exception is that account under a NEW NAME. A GitHub id is immutable and a
               // login is not, so a row whose `github_id` is this user's IS this user, whatever
-              // handle the cell still spells - and the rewrite below re-links the row. Without
-              // it a renamed student got NO_MATCH here for ever, while the nightly reconcile
-              // pruned their new login off every team and re-added a login that no longer
-              // exists: unrecoverable without a hand edit nobody knew to make.
+              // handle the cell still spells. Without it a renamed student got NO_MATCH here
+              // for ever.
               const boundElsewhere = (r) =>
                 r[iHandle] && r[iHandle].toLowerCase() !== handle.toLowerCase() &&
                 (r[iId] || '').trim() !== String(userId);
+              // ...but such a row is NOT rewritten here. Their repos, gradebook, teams.csv
+              // rows and sheet keys are all named after the OLD login, and the hourly relink
+              // (dsl_course.relink) moves every one of them, keyed on that old login being
+              // gone. Writing the new login into the cell first would hide the rename from
+              // it for good: the next handout makes fresh, empty repos under the new name.
+              const renamed = (r) =>
+                r[iHandle] && r[iHandle].toLowerCase() !== handle.toLowerCase() &&
+                (r[iId] || '').trim() === String(userId);
+              const alreadyLinked = async () => {
+                await github.rest.issues.createComment({
+                  owner: org, repo: context.repo.repo, issue_number: issue.number, body:
+                    `Thanks @${handle} - you are already enrolled, under your previous GitHub username. ` +
+                    `Nothing to do: your new username is picked up automatically within the hour, ` +
+                    `repos and all. If your repos have not moved to it within a day, contact your instructors.` });
+                await github.rest.issues.addLabels({
+                  owner: org, repo: context.repo.repo, issue_number: issue.number, labels: ['onboarded'] });
+                await github.rest.issues.update({
+                  owner: org, repo: context.repo.repo, issue_number: issue.number,
+                  title: `Join course: ${handle}`, state: 'closed' });
+              };
               // The public reply cannot say WHY (above), so the teaching team is told
-              // privately: one new file per issue in classroom-config, so no sha to race.
+              // privately: one new file per issue in semester-config, so no sha to race.
               // Who asked and who the row is bound to - never the code. Best-effort: a
               // record that cannot be written must not cost the student their reply.
               const recordRefusal = async (r) => {
@@ -225,7 +247,7 @@ jobs:
                     at: new Date().toISOString(),
                   };
                   await github.rest.repos.createOrUpdateFileContents({
-                    owner: org, repo: CONFIG, path: `enrolment/refusals/${issue.number}.json`,
+                    owner: org, repo: CONFIG, path: `.system/enrolment/refusals/${issue.number}.json`,
                     message: `enrolment: record why Join #${issue.number} was refused`,
                     content: Buffer.from(JSON.stringify(record, null, 2) + '\n', 'utf8').toString('base64'),
                   });
@@ -239,6 +261,7 @@ jobs:
                 await recordRefusal(row);
                 return fail(NO_MATCH, 'needs-review');
               }
+              if (renamed(row)) return alreadyLinked();
 
               // Write the authenticated handle + immutable id back (idempotent).
               //
@@ -266,7 +289,7 @@ jobs:
                   matched = rows.find(r => r[iCode].trim().toLowerCase() === code.toLowerCase());
                   if (!matched) return fail(
                     `Thanks @${handle} - your roster row disappeared while I was writing to it. ` +
-                    `Please re-open this issue, or contact the teaching team.`,
+                    `Please re-open this issue, or contact your instructors.`,
                     'needs-review');
                   // Re-check the single-use binding on the FRESH row, not only before the loop:
                   // two issues quoting the same code race here, and the loser must not overwrite
@@ -275,6 +298,7 @@ jobs:
                     await recordRefusal(matched);
                     return fail(NO_MATCH, 'needs-review');
                   }
+                  if (renamed(matched)) return alreadyLinked();
                   matched[iHandle] = handle; matched[iId] = String(userId);
                   const body = serialiseCsv([header, ...rows]);
                   try {

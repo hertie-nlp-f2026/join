@@ -1,5 +1,7 @@
 # SYSTEM-OWNED - do not edit. This form's field ids are a contract with .github/workflows/team-formation.yml,
 # which parses them; both are re-pushed by every bootstrap and nightly refresh.
+# The student console opens the same issue through the API, with this form's body under a
+# hidden first line, `<!-- dsl:join-team -->`, which routes it in place of the label.
 name: Join team
 description: Join, start or switch team for a group assignment
 title: "Join team"
@@ -8,21 +10,21 @@ body:
   - type: markdown
     attributes:
       value: |
-        The teams that already exist, and how much room each has left, are listed on the assignment's page on the cohort site.
+        The teams that already exist, and how much room each has left, are listed on the assignment's page on the semester site.
 
         To **join** one, choose *Join or switch to an existing team* and type its name exactly as that page spells it. To **start** one, choose *Create a new team* and pick a name nobody is using yet.
 
         Already in a team? Joining or creating another moves you out of your current one while team formation is open.
-  # dsl:assignment-field:start - this cohort's open assignments are spliced in here as a
-  # dropdown by dsl_course.welcome.join_team_form; edits between these markers are
-  # overwritten on the next refresh. The free-text field below is what a cohort with no
-  # assignment open for team formation receives.
-  - type: input
+  # dsl:assignment-field:start - AUTO-GENERATED from this semester's
+  # `semester-config/.system/assignments.lock.yml`: the assignments open for team
+  # formation right now. Edits between these markers are overwritten.
+  - type: dropdown
     id: assignment
     attributes:
       label: Assignment
-      description: The assignment slug, spelt as the course site spells it.
-      placeholder: "e.g. assignment-4-project"
+      description: This semester has no team assignment open right now, so this form is not needed.
+      options:
+        - No team assignment is open right now
     validations:
       required: true
   # dsl:assignment-field:end
